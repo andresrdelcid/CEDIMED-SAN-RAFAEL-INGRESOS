@@ -120,10 +120,24 @@ function fmtNum(n) { return Math.round(n).toLocaleString(); }
 function getYear() { return parseInt(document.getElementById('yearSel').value); }
 
 async function fetchSheet(tabName) {
-  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(tabName)}`;
+  // Use gviz JSON endpoint - most compatible across browsers and iOS
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(tabName)}`;
   const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const text = await res.text();
-  return parseCSV(text);
+  // gviz returns /*O_o*/\ngoogle.visualization.Query.setResponse({...})
+  // Strip the wrapper to get JSON
+  const json = JSON.parse(text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\)/)[1]);
+  const rows = json.table.rows;
+  const cols = json.table.cols;
+  // Convert to 2D array with headers
+  const header = cols.map(c => c.label || '');
+  const data = [header];
+  for (const row of rows) {
+    const r = row.c.map(cell => cell ? (cell.v !== null ? String(cell.v) : '') : '');
+    data.push(r);
+  }
+  return data;
 }
 
 function parseCSV(text) {
@@ -133,30 +147,79 @@ function parseCSV(text) {
 }
 
 function parseRevenue(rows) {
-  // Rows: Year, Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec
+  // Format: first row is header: Mes, 2023, 2024, 2025, 2026, ...
+  // Subsequent rows: 01-ENE, val, val, val, val, ...
+  // Last row is Total — skip it
+  if (!rows || rows.length < 2) return {};
+  
+  const header = rows[0];
   const result = {};
-  for (const row of rows) {
-    const year = parseInt(row[0]);
-    if (!year || isNaN(year)) continue;
-    result[year] = [0, ...row.slice(1, 13).map(v => parseFloat(v) || 0)];
+  
+  // Find year columns from header
+  const yearCols = {};
+  for (let i = 1; i < header.length; i++) {
+    const yr = parseInt(header[i]);
+    if (yr >= 2020 && yr <= 2030) yearCols[yr] = i;
   }
-  return result;
+  
+  // Initialize result arrays [0, jan, feb, ..., dec]
+  for (const yr of Object.keys(yearCols)) {
+    result[yr] = [0,0,0,0,0,0,0,0,0,0,0,0,0];
+  }
+  
+  // Month rows
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    const monthStr = row[0] || '';
+    // Extract month number from "01-ENE", "02-FEB" etc
+    const monthNum = parseInt(monthStr.split('-')[0]);
+    if (!monthNum || isNaN(monthNum) || monthNum < 1 || monthNum > 12) continue;
+    
+    for (const [yr, col] of Object.entries(yearCols)) {
+      const val = parseFloat((row[col] || '0').replace(/[^0-9.-]/g, '')) || 0;
+      result[yr][monthNum] = val;
+    }
+  }
+  
+  // Convert string keys to int keys
+  const final = {};
+  for (const [yr, arr] of Object.entries(result)) {
+    final[parseInt(yr)] = arr;
+  }
+  return final;
 }
 
 function parseAreas(rows) {
-  // Rows: Area, Year, Qty, Revenue (or similar)
+  // Format: first row is header: Area, 2023, 2024, 2025, 2026 (or similar)
+  // Each subsequent row: AREA_NAME, qty2023, qty2024, qty2025, qty2026
+  if (!rows || rows.length < 2) return {};
+  
+  const header = rows[0];
   const result = {};
-  for (const row of rows) {
-    if (!row[0] || row[0] === '') continue;
-    const area = row[0].toString().toUpperCase().trim();
-    for (let i = 1; i < row.length - 1; i += 2) {
-      const year = parseInt(row[i]);
-      const qty = parseFloat(row[i+1]) || 0;
-      if (!year || isNaN(year)) continue;
-      if (!result[year]) result[year] = {};
-      result[year][area] = (result[year][area] || 0) + qty;
+  
+  // Find year columns
+  const yearCols = {};
+  for (let i = 1; i < header.length; i++) {
+    const yr = parseInt(header[i]);
+    if (yr >= 2020 && yr <= 2030) yearCols[yr] = i;
+  }
+  
+  for (const yr of Object.keys(yearCols)) {
+    result[parseInt(yr)] = {};
+  }
+  
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    const area = (row[0] || '').toUpperCase().trim();
+    if (!area || area === 'TOTAL' || area === '') continue;
+    
+    for (const [yr, col] of Object.entries(yearCols)) {
+      const val = parseFloat((row[col] || '0').replace(/[^0-9.-]/g, '')) || 0;
+      if (!result[parseInt(yr)][area]) result[parseInt(yr)][area] = 0;
+      result[parseInt(yr)][area] += val;
     }
   }
+  
   return result;
 }
 
