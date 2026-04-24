@@ -149,7 +149,7 @@ function parseCSV(text) {
 function parseRevenue(rows) {
   // Format: first row is header: Mes, 2023, 2024, 2025, 2026, ...
   // Subsequent rows: 01-ENE, val, val, val, val, ...
-  // Last row is Total — skip it
+  // Skip Total/empty rows — only count rows where first cell starts with NN-
   if (!rows || rows.length < 2) return {};
   
   const header = rows[0];
@@ -167,21 +167,22 @@ function parseRevenue(rows) {
     result[yr] = [0,0,0,0,0,0,0,0,0,0,0,0,0];
   }
   
-  // Month rows
+  // Month rows — STRICT: only rows that match NN-MMM pattern
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r];
-    const monthStr = row[0] || '';
-    // Extract month number from "01-ENE", "02-FEB" etc
+    const monthStr = String(row[0] || '').trim();
+    // Must match pattern like "01-ENE", "02-FEB"
+    if (!/^\d{1,2}-[A-Z]{3}$/i.test(monthStr)) continue;
     const monthNum = parseInt(monthStr.split('-')[0]);
-    if (!monthNum || isNaN(monthNum) || monthNum < 1 || monthNum > 12) continue;
+    if (!monthNum || monthNum < 1 || monthNum > 12) continue;
     
     for (const [yr, col] of Object.entries(yearCols)) {
-      const val = parseFloat((row[col] || '0').replace(/[^0-9.-]/g, '')) || 0;
+      const cellVal = String(row[col] || '0').replace(/[^0-9.-]/g, '');
+      const val = parseFloat(cellVal) || 0;
       result[yr][monthNum] = val;
     }
   }
   
-  // Convert string keys to int keys
   const final = {};
   for (const [yr, arr] of Object.entries(result)) {
     final[parseInt(yr)] = arr;
